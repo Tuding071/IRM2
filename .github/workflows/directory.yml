@@ -1,0 +1,133 @@
+name: Directory Scanner
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scan-directory:
+    name: Scan Complete Directory Structure
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Create version name
+        run: echo "VERSION_NAME=$(git describe --tags HEAD)" >> $GITHUB_ENV
+
+      - name: Install Android SDK
+        run: |
+          echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
+          ./automation/iceraven/install-sdk.sh
+
+      - name: Generate dummy keystore
+        run: |
+          keytool -genkey -v \
+            -keystore app/dummy.keystore \
+            -alias dummy \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass password \
+            -keypass password \
+            -dname "CN=Dummy, OU=Iceraven, O=Iceraven, L=Test, S=Test, C=US"
+
+      - name: Patch strings
+        run: |
+          ./automation/iceraven/patch_android_components.sh
+          sed -i 's/Firefox/Iceraven/g' app/src/main/res/values*/*strings.xml
+          sed -i '/about_content/s/Mozilla/@forkmaintainers/' app/src/main/res/values*/*strings.xml
+
+      - name: Build forkRelease
+        run: |
+          ./gradlew app:assembleForkRelease \
+            -PversionName=${{ env.VERSION_NAME }} \
+            --no-daemon
+
+      - name: Create dummy APK for testing
+        run: |
+          mkdir -p test_dummy
+          echo "This is a dummy APK for testing purposes" > test_dummy/dummy.apk
+          echo "✅ Created dummy APK at test_dummy/dummy.apk"
+
+      - name: Full directory scan
+        run: |
+          echo "========================================"
+          echo "🔍 COMPLETE DIRECTORY STRUCTURE SCAN"
+          echo "========================================"
+          echo ""
+          
+          echo "📂 COMPLETE FILE TREE (all files):"
+          echo "----------------------------------------"
+          find . -type f | sort > complete_file_list.txt
+          cat complete_file_list.txt
+          echo ""
+          
+          echo "📦 ALL APK FILES FOUND:"
+          echo "----------------------------------------"
+          find . -name "*.apk" -type f > apk_list.txt
+          if [ -s apk_list.txt ]; then
+            while read apk; do
+              echo "  📱 $apk ($(ls -lh "$apk" | awk '{print $5}'))"
+            done < apk_list.txt
+          else
+            echo "  ❌ NO APK FILES FOUND ANYWHERE!"
+          fi
+          echo ""
+          
+          echo "📁 ALL DIRECTORIES IN BUILD OUTPUT:"
+          echo "----------------------------------------"
+          find app/build -type d 2>/dev/null | sort || echo "No app/build directory found"
+          echo ""
+          
+          echo "📁 BUILD OUTPUTS DIRECTORY:"
+          echo "----------------------------------------"
+          find app/build/outputs -type f 2>/dev/null | sort > outputs_list.txt
+          if [ -s outputs_list.txt ]; then
+            cat outputs_list.txt
+          else
+            echo "No files in app/build/outputs"
+          fi
+          echo ""
+          
+          echo "📊 TOP LEVEL DIRECTORY STRUCTURE:"
+          echo "----------------------------------------"
+          ls -la
+          echo ""
+          
+          echo "📊 APP DIRECTORY STRUCTURE:"
+          echo "----------------------------------------"
+          ls -la app/ 2>/dev/null || echo "No app directory"
+          echo ""
+          
+          echo "📊 BUILD DIRECTORY STRUCTURE:"
+          echo "----------------------------------------"
+          ls -la app/build/ 2>/dev/null || echo "No app/build directory"
+          echo ""
+          
+          echo "========================================"
+          echo "✅ SCAN COMPLETE"
+          echo "========================================"
+
+      - name: Upload scan results
+        uses: actions/upload-artifact@v4
+        with:
+          name: directory-scan-results
+          path: |
+            complete_file_list.txt
+            apk_list.txt
+            outputs_list.txt
+
+      - name: Upload dummy APK (just to verify upload works)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dummy-test-apk
+          path: test_dummy/dummy.apk
