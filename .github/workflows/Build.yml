@@ -1,0 +1,101 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - iceraven
+
+jobs:
+  release-automation:
+    name: Build App
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.11.1
+
+      - name: Create version name
+        run: echo "VERSION_NAME=$(git describe --tags HEAD)" >> $GITHUB_ENV
+
+      - name: Install Android SDK components
+        run: |
+          echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses
+          ./automation/iceraven/install-sdk.sh
+
+      - name: Patch on the fly
+        run: |
+          ./automation/iceraven/patch_android_components.sh
+          sed -i 's/Firefox/Iceraven/g' app/src/*/res/values*/*strings.xml
+          sed -i '/about_content/s/Mozilla/@forkmaintainers/' app/src/*/res/values*/*strings.xml
+          sed -i '/<string name="trackers_blocked_panel_categorical_num_trackers_blocked">/s/%s/%1$s/g; /<string name="trackers_blocked_panel_categorical_num_trackers_blocked">/s/%d/%2$d/g' app/src/*/res/values*/*strings.xml
+
+      - name: Build forkRelease variant
+        run: |
+          ./gradlew app:assembleForkRelease \
+            -PversionName=${{ env.VERSION_NAME }} \
+            --stacktrace \
+            --no-daemon \
+            -Dorg.gradle.jvmargs="-XX:MaxMetaspaceSize=4g -Xms1g -Xmx8g -XX:+HeapDumpOnOutOfMemoryError"
+
+      - name: Setup build tool version
+        shell: bash
+        run: |
+          BUILD_TOOL_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | tail -n 1)
+          echo "BUILD_TOOL_VERSION=$BUILD_TOOL_VERSION" >> $GITHUB_ENV
+
+      - name: Sign APKs
+        run: |
+          APK_DIR="app/build/outputs/apk/forkRelease"
+          mkdir -p signed_apks
+          
+          for apk in $APK_DIR/*.apk; do
+            if [ -f "$apk" ]; then
+              apk_name=$(basename "$apk")
+              $ANDROID_HOME/build-tools/${{ env.BUILD_TOOL_VERSION }}/apksigner sign \
+                --ks <(echo "${{ secrets.DEBUG_SIGNING_KEY }}" | base64 -d) \
+                --ks-pass pass:${{ secrets.DEBUG_KEY_STORE_PASSWORD }} \
+                --ks-key-alias ${{ secrets.DEBUG_ALIAS }} \
+                --key-pass pass:${{ secrets.DEBUG_KEY_PASSWORD }} \
+                --out "signed_apks/$apk_name" \
+                "$apk"
+            fi
+          done
+
+      - name: Debug output
+        run: |
+          ls -alh signed_apks/
+          for apk in signed_apks/*.apk; do
+            echo "📦 $(basename $apk): $(ls -lh $apk | awk '{print $5}')"
+          done
+
+      - name: Upload arm64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          path: signed_apks/app-arm64-v8a-forkRelease.apk
+          name: ${{ env.VERSION_NAME }}-browser-arm64-v8a-forkRelease
+
+      - name: Upload armeabi APK
+        uses: actions/upload-artifact@v4
+        with:
+          path: signed_apks/app-armeabi-v7a-forkRelease.apk
+          name: ${{ env.VERSION_NAME }}-browser-armeabi-v7a-forkRelease
+
+      - name: Upload x86_64 APK
+        uses: actions/upload-artifact@v4
+        with:
+          path: signed_apks/app-x86_64-forkRelease.apk
+          name: ${{ env.VERSION_NAME }}-browser-x86_64-forkRelease
