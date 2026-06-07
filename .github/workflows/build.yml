@@ -1,6 +1,9 @@
 name: CI2
 
 on:
+  push:
+    branches:
+      - iceraven
   workflow_dispatch:
 
 jobs:
