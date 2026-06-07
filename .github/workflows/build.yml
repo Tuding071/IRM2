@@ -1,0 +1,84 @@
+name: CI2
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-specific:
+    name: Build forkRelease arm64-v8a
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'true'
+          fetch-depth: 0
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Setup Gradle (with cache)
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Create version name
+        run: |
+          VERSION=$(git describe --tags HEAD 2>/dev/null || echo "dev-$(git rev-parse --short HEAD)")
+          echo "VERSION_NAME=$VERSION" >> $GITHUB_ENV
+
+      - name: Install Android SDK
+        run: |
+          echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
+          ./automation/iceraven/install-sdk.sh
+
+      - name: Generate dummy keystore
+        run: |
+          keytool -genkey -v \
+            -keystore app/dummy.keystore \
+            -alias dummy \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass password \
+            -keypass password \
+            -dname "CN=Dummy, OU=Iceraven, O=Iceraven, L=Test, S=Test, C=US"
+
+      - name: Patch strings
+        run: |
+          ./automation/iceraven/patch_android_components.sh
+          sed -i 's/Firefox/Iceraven/g' app/src/main/res/values*/*strings.xml
+          sed -i '/about_content/s/Mozilla/@forkmaintainers/' app/src/main/res/values*/*strings.xml
+
+      - name: Build forkRelease arm64-v8a only
+        run: |
+          ./gradlew app:assembleForkRelease \
+            -PversionName=${{ env.VERSION_NAME }} \
+            -PautoSignRelease=true \
+            -Pandroid.injected.build.abi=arm64-v8a \
+            --no-daemon
+
+      - name: Copy APK to output
+        run: |
+          echo "📂 Scanning entire workspace for APKs..."
+          find . -name "*.apk" -type f 2>/dev/null | while read apk; do
+            echo "  📦 $apk ($(du -h "$apk" | cut -f1))"
+          done
+
+          APK=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
+
+          if [ -z "$APK" ]; then
+            echo "❌ No APK found!"
+            exit 1
+          fi
+
+          mkdir -p output
+          cp "$APK" "output/${{ env.VERSION_NAME }}-arm64-forkRelease.apk"
+          echo "✅ Copied: output/${{ env.VERSION_NAME }}-arm64-forkRelease.apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.VERSION_NAME }}-arm64-forkRelease
+          path: output/*.apk
