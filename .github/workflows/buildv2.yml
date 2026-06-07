@@ -1,9 +1,6 @@
 name: CI
 
 on:
-  push:
-    branches:
-      - iceraven
   workflow_dispatch:
 
 jobs:
@@ -64,12 +61,12 @@ jobs:
 
       - name: Copy APK to output
         run: |
-          echo "📂 Scanning build outputs..."
-          find app/build/outputs/ -name "*.apk" -type f | while read apk; do
+          echo "📂 Scanning entire workspace for APKs..."
+          find . -name "*.apk" -type f 2>/dev/null | while read apk; do
             echo "  📦 $apk ($(du -h "$apk" | cut -f1))"
           done
 
-          APK=$(find app/build/outputs/ -name "*.apk" -type f | head -1)
+          APK=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
 
           if [ -z "$APK" ]; then
             echo "❌ No APK found!"
