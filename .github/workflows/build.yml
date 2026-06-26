@@ -63,7 +63,7 @@ jobs:
 
       - name: Sign APK manually
         run: |
-          UNSIGNED=$(find . -path "*/forkRelease/*.apk" -not -name "*-signed*" | head -1)
+          UNSIGNED=$(find . -path "*/outputs/apk/forkRelease/*.apk" | head -1)
           if [ -z "$UNSIGNED" ]; then
             echo "❌ No unsigned APK found!"
             find . -name "*.apk" | while read f; do echo "  $f"; done
