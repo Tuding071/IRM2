@@ -65,7 +65,6 @@ jobs:
           with open('app/build.gradle', 'r') as f:
               content = f.read()
 
-          # Inject signingConfigs block before buildTypes
           signing_block = '''    signingConfigs {
               ciSign {
                   storeFile file(System.getenv("GITHUB_WORKSPACE") + "/release.keystore")
@@ -77,13 +76,11 @@ jobs:
           '''
           content = content.replace('    buildTypes {', signing_block + '    buildTypes {', 1)
 
-          # Wire signingConfig into forkRelease
           content = content.replace(
               'forkRelease releaseTemplate >> {',
               'forkRelease releaseTemplate >> {\n            signingConfig signingConfigs.ciSign'
           )
 
-          # Restrict ABI splits to arm64 only
           content = content.replace(
               'include "armeabi-v7a", "arm64-v8a", "x86_64"',
               'include "arm64-v8a"'
@@ -99,6 +96,11 @@ jobs:
           ./automation/iceraven/patch_android_components.sh
           sed -i 's/Firefox/Iceraven/g' app/src/main/res/values*/*strings.xml
           sed -i '/about_content/s/Mozilla/@forkmaintainers/' app/src/main/res/values*/*strings.xml
+
+      - name: Configure Gradle retries
+        run: |
+          echo "org.gradle.internal.repository.max.retries=3" >> gradle.properties
+          echo "org.gradle.internal.repository.initial.backoff.ms=1000" >> gradle.properties
 
       - name: Build forkRelease arm64-v8a
         run: |
