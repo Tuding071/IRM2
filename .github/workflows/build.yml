@@ -31,10 +31,21 @@ jobs:
           VERSION=$(git describe --tags HEAD 2>/dev/null || echo "dev-$(git rev-parse --short HEAD)")
           echo "VERSION_NAME=$VERSION" >> $GITHUB_ENV
 
+      - name: Cache Android SDK
+        uses: actions/cache@v4
+        id: sdk-cache
+        with:
+          path: /usr/local/lib/android/sdk
+          key: android-sdk-${{ hashFiles('automation/iceraven/install-sdk.sh') }}
+
       - name: Install Android SDK
         run: |
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
-          ./automation/iceraven/install-sdk.sh
+          if [ "${{ steps.sdk-cache.outputs.cache-hit }}" != "true" ]; then
+            ./automation/iceraven/install-sdk.sh
+          else
+            echo "✅ SDK restored from cache, skipping install"
+          fi
 
       - name: Generate keystore
         run: |
@@ -63,7 +74,7 @@ jobs:
 
       - name: Sign APK manually
         run: |
-          UNSIGNED=$(find . -path "*/outputs/apk/forkRelease/*.apk" | head -1)
+          UNSIGNED=$(find . -name "*forkRelease-unsigned.apk" | head -1)
           if [ -z "$UNSIGNED" ]; then
             echo "❌ No unsigned APK found!"
             find . -name "*.apk" | while read f; do echo "  $f"; done
