@@ -44,7 +44,7 @@ jobs:
           if [ "${{ steps.sdk-cache.outputs.cache-hit }}" != "true" ]; then
             ./automation/iceraven/install-sdk.sh
           else
-            echo "✅ SDK restored from cache, skipping install"
+            echo "✅ SDK restored from cache"
           fi
 
       - name: Generate keystore
@@ -59,59 +59,73 @@ jobs:
             -keypass iceravenpass \
             -dname "CN=Iceraven, OU=Build, O=Personal, L=PH, S=PH, C=PH"
 
+      - name: Patch build.gradle for signing and arm64-only
+        run: |
+          python3 << 'PYEOF'
+          with open('app/build.gradle', 'r') as f:
+              content = f.read()
+
+          # Inject signingConfigs block before buildTypes
+          signing_block = '''    signingConfigs {
+              ciSign {
+                  storeFile file(System.getenv("GITHUB_WORKSPACE") + "/release.keystore")
+                  storePassword "iceravenpass"
+                  keyAlias "iceraven"
+                  keyPassword "iceravenpass"
+              }
+          }
+          '''
+          content = content.replace('    buildTypes {', signing_block + '    buildTypes {', 1)
+
+          # Wire signingConfig into forkRelease
+          content = content.replace(
+              'forkRelease releaseTemplate >> {',
+              'forkRelease releaseTemplate >> {\n            signingConfig signingConfigs.ciSign'
+          )
+
+          # Restrict ABI splits to arm64 only
+          content = content.replace(
+              'include "armeabi-v7a", "arm64-v8a", "x86_64"',
+              'include "arm64-v8a"'
+          )
+
+          with open('app/build.gradle', 'w') as f:
+              f.write(content)
+          print("✅ Patched build.gradle")
+          PYEOF
+
       - name: Patch strings
         run: |
           ./automation/iceraven/patch_android_components.sh
           sed -i 's/Firefox/Iceraven/g' app/src/main/res/values*/*strings.xml
           sed -i '/about_content/s/Mozilla/@forkmaintainers/' app/src/main/res/values*/*strings.xml
 
-      - name: Build forkRelease arm64-v8a (unsigned)
+      - name: Build forkRelease arm64-v8a
         run: |
           ./gradlew app:assembleForkRelease \
             -PversionName=${{ env.VERSION_NAME }} \
-            -Pandroid.injected.build.abi=arm64-v8a \
             --no-daemon
 
-      - name: Sign APK manually
+      - name: Find and verify APK
         run: |
-          UNSIGNED=$(find . -name "*forkRelease-unsigned.apk" | head -1)
-          if [ -z "$UNSIGNED" ]; then
-            echo "❌ No unsigned APK found!"
+          APK=$(find . -path "*/outputs/apk/forkRelease/*.apk" | head -1)
+          if [ -z "$APK" ]; then
+            echo "❌ No APK in outputs! All APKs found:"
             find . -name "*.apk" | while read f; do echo "  $f"; done
             exit 1
           fi
-          echo "📦 Found: $UNSIGNED"
-
-          BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
-          ZIPALIGN=$ANDROID_HOME/build-tools/$BUILD_TOOLS/zipalign
-          APKSIGNER=$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner
-
-          ALIGNED=${{ github.workspace }}/aligned.apk
-          SIGNED=${{ github.workspace }}/signed.apk
-
-          $ZIPALIGN -v -p 4 "$UNSIGNED" "$ALIGNED"
-          $APKSIGNER sign \
-            --ks ${{ github.workspace }}/release.keystore \
-            --ks-key-alias iceraven \
-            --ks-pass pass:iceravenpass \
-            --key-pass pass:iceravenpass \
-            --out "$SIGNED" \
-            "$ALIGNED"
-
-          echo "✅ Signed APK ready"
-
-      - name: Verify APK
-        run: |
+          echo "📦 Found: $APK"
           BUILD_TOOLS=$(ls $ANDROID_HOME/build-tools | sort -V | tail -1)
           APKSIGNER=$ANDROID_HOME/build-tools/$BUILD_TOOLS/apksigner
-          $APKSIGNER verify --verbose ${{ github.workspace }}/signed.apk \
-            && echo "✅ Verification passed" \
+          $APKSIGNER verify --verbose "$APK" \
+            && echo "✅ APK verified" \
             || (echo "❌ Verification failed!" && exit 1)
 
       - name: Copy APK to output
         run: |
+          APK=$(find . -path "*/outputs/apk/forkRelease/*.apk" | head -1)
           mkdir -p output
-          cp ${{ github.workspace }}/signed.apk "output/${{ env.VERSION_NAME }}-arm64-forkRelease.apk"
+          cp "$APK" "output/${{ env.VERSION_NAME }}-arm64-forkRelease.apk"
           echo "✅ $(du -h output/*.apk)"
 
       - name: Upload APK
