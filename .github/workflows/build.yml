@@ -1,4 +1,4 @@
-name: CI
+name: CI2
 
 on:
   push:
@@ -36,17 +36,17 @@ jobs:
           echo "sdk.dir=/usr/local/lib/android/sdk" > local.properties
           ./automation/iceraven/install-sdk.sh
 
-      - name: Generate dummy keystore
+      - name: Generate keystore
         run: |
           keytool -genkey -v \
-            -keystore app/dummy.keystore \
-            -alias dummy \
+            -keystore app/release.keystore \
+            -alias iceraven \
             -keyalg RSA \
             -keysize 2048 \
             -validity 10000 \
-            -storepass password \
-            -keypass password \
-            -dname "CN=Dummy, OU=Iceraven, O=Iceraven, L=Test, S=Test, C=US"
+            -storepass iceravenpass \
+            -keypass iceravenpass \
+            -dname "CN=Iceraven, OU=Build, O=Personal, L=PH, S=PH, C=PH"
 
       - name: Patch strings
         run: |
@@ -54,53 +54,35 @@ jobs:
           sed -i 's/Firefox/Iceraven/g' app/src/main/res/values*/*strings.xml
           sed -i '/about_content/s/Mozilla/@forkmaintainers/' app/src/main/res/values*/*strings.xml
 
-      - name: Disable ABI splits (single installable APK)
-        run: |
-          python3 - <<'EOF'
-          import re
-
-          with open('app/build.gradle', 'r') as f:
-              content = f.read()
-
-          # Disable splits so output is one installable APK
-          content = re.sub(
-              r'(splits\s*\{.*?abi\s*\{.*?)enable\s+\S+',
-              r'\1enable false',
-              content,
-              flags=re.DOTALL
-          )
-
-          with open('app/build.gradle', 'w') as f:
-              f.write(content)
-
-          print("✅ ABI splits disabled")
-          EOF
-
       - name: Build forkRelease arm64-v8a only
         run: |
           ./gradlew app:assembleForkRelease \
             -PversionName=${{ env.VERSION_NAME }} \
             -PautoSignRelease=true \
+            -Pandroid.injected.signing.store.file=${{ github.workspace }}/app/release.keystore \
+            -Pandroid.injected.signing.store.password=iceravenpass \
+            -Pandroid.injected.signing.key.alias=iceraven \
+            -Pandroid.injected.signing.key.password=iceravenpass \
             -Pandroid.injected.build.abi=arm64-v8a \
             --no-daemon
 
-      - name: Copy APK to output
+      - name: Verify APK signed
         run: |
-          echo "📂 Scanning entire workspace for APKs..."
-          find . -name "*.apk" -type f 2>/dev/null | while read apk; do
-            echo "  📦 $apk ($(du -h "$apk" | cut -f1))"
-          done
-
-          APK=$(find . -name "*.apk" -type f 2>/dev/null | head -1)
-
+          APK=$(find . -name "*.apk" -type f | head -1)
           if [ -z "$APK" ]; then
             echo "❌ No APK found!"
             exit 1
           fi
+          APKSIGNER=$(find $ANDROID_HOME/build-tools -name "apksigner" | sort -V | tail -1)
+          echo "🔍 Verifying: $APK"
+          $APKSIGNER verify --verbose "$APK" && echo "✅ APK is properly signed" || (echo "❌ APK is NOT signed!" && exit 1)
 
+      - name: Copy APK to output
+        run: |
+          APK=$(find . -name "*.apk" -type f | head -1)
           mkdir -p output
           cp "$APK" "output/${{ env.VERSION_NAME }}-arm64-forkRelease.apk"
-          echo "✅ Copied: output/${{ env.VERSION_NAME }}-arm64-forkRelease.apk"
+          echo "✅ $(du -h output/*.apk)"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
